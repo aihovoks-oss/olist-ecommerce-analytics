@@ -1,0 +1,292 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b9aec620-1871-4702-a8be-3b367ccc0e7c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "# Путь к папке с данными\n",
+    "path = 'brazilian-ecommerce-analytics-main/src/data/'\n",
+    "\n",
+    "# Загружаем 5 базовых таблиц для нашего синьорского анализа\n",
+    "customers = pd.read_csv(f'{path}olist_customers_dataset.csv')\n",
+    "orders = pd.read_csv(f'{path}olist_orders_dataset.csv')\n",
+    "reviews = pd.read_csv(f'{path}olist_order_reviews_dataset.csv')\n",
+    "items = pd.read_csv(f'{path}olist_order_items_dataset.csv')\n",
+    "products = pd.read_csv(f'{path}olist_products_dataset.csv')\n",
+    "\n",
+    "print(\"Все необходимые датасеты успешно загружены в память!\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a6de25f9-e81f-4184-8a65-3d5345257448",
+   "metadata": {},
+   "source": [
+    "## Блок 2. Объединение данных и гео-аналитика логистики\n",
+    "\n",
+    "### Цель этапа:\n",
+    "Связать данные о заказах с географическим положением клиентов, чтобы рассчитать среднее время доставки для каждого бразильского штата и локализовать ключевые логистические проблемы."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "443c6b2e-1e6d-4150-98bc-21820326df40",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Переводим даты из строк в правильный формат datetime\n",
+    "orders['order_delivered_customer_date'] = pd.to_datetime(orders['order_delivered_customer_date'])\n",
+    "orders['order_purchase_timestamp'] = pd.to_datetime(orders['order_purchase_timestamp'])\n",
+    "\n",
+    "# 2. Считаем чистое время доставки в днях\n",
+    "orders['delivery_days'] = (orders['order_delivered_customer_date'] - orders['order_purchase_timestamp']).dt.days\n",
+    "\n",
+    "# 3. Соединяем заказы с клиентами, чтобы получить информацию о штатах (customer_state)\n",
+    "df_merged = orders.merge(customers, on='customer_id', how='inner')\n",
+    "\n",
+    "# 4. Соединяем полученную базу с отзывами (нам это нужно для следующих этапов)\n",
+    "df_merged = df_merged.merge(reviews[['order_id', 'review_score']], on='order_id', how='inner')\n",
+    "\n",
+    "# 5. Считаем среднее время доставки по штатам и выводим ТОП-5 самых долгих регионов\n",
+    "geo_delivery = df_merged.groupby('customer_state')['delivery_days'].mean().reset_index()\n",
+    "geo_delivery = geo_delivery.rename(columns={'delivery_days': 'avg_delivery_days'})\n",
+    "\n",
+    "# Округлим для красоты и отсортируем по убыванию сроков\n",
+    "geo_delivery['avg_delivery_days'] = geo_delivery['avg_delivery_days'].round(1)\n",
+    "geo_delivery.sort_values(by='avg_delivery_days', ascending=False).head(5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "130f6d4d-d06f-409c-9f92-98fa64a49a49",
+   "metadata": {},
+   "source": [
+    "### 🔍 Бизнес-вывод по Блоку 2:\n",
+    "Анализ географии показал критическую неравномерность логистики в Бразилии. В то время как в центральных регионах (например, Сан-Паулу) доставка занимает приемлемые сроки, в удаленных штатах (лидер — штат RR, Рорайма) клиенты вынуждены ждать посылки в среднем **до 29 дней**. Логистика является главным узким местом компании."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "eb02caa2-96e5-4447-8581-a927fafc2532",
+   "metadata": {},
+   "source": [
+    "## Блок 3. Метрика «Обещание vs Реальность» (Анализ просрочки)\n",
+    "\n",
+    "### Цель этапа:\n",
+    "Рассчитать точное количество дней опоздания (просрочки) относительно той даты, которую маркетплейс пообещал клиенту при оформлении заказа, и связать этот показатель с оценками в отзывах."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "8dfad52c-1b1d-43cb-8085-75130c8b7b33",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Переводим обещанную дату доставки в формат datetime\n",
+    "df_merged['order_estimated_delivery_date'] = pd.to_datetime(df_merged['order_estimated_delivery_date'])\n",
+    "\n",
+    "# 2. Считаем разницу: реальная дата минус обещанная\n",
+    "df_merged['delivery_delay'] = (df_merged['order_delivered_customer_date'] - df_merged['order_estimated_delivery_date']).dt.days\n",
+    "\n",
+    "# 3. Убираем отрицательные значения (доставку раньше срока приравниваем к 0)\n",
+    "df_merged['delivery_delay'] = df_merged['delivery_delay'].clip(lower=0)\n",
+    "\n",
+    "# 4. Агрегируем данные: считаем среднее опоздание для каждого балла оценки\n",
+    "delay_vs_score = df_merged.groupby('review_score')['delivery_delay'].mean().reset_index()\n",
+    "\n",
+    "# Округлим для профессионального вида\n",
+    "delay_vs_score['delivery_delay'] = delay_vs_score['delivery_delay'].round(2)\n",
+    "display(delay_vs_score)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "6ac03cf3-ff19-4b77-9092-c30847e5d9d1",
+   "metadata": {},
+   "source": [
+    "### 🔍 Бизнес-вывод по Блоку 3:\n",
+    "Обнаружена прямая математическая зависимость между оценкой удовлетворенности и точностью прогноза логистики. Клиенты, поставившие 5 звезд, получили заказы вовремя (средняя просрочка всего 0.13 дня). Клиенты, выставившие 1 звезду, столкнулись с жестким нарушением обязательств — товар задерживался в среднем на **4.5 дня** от обещанного срока. \n",
+    "\n",
+    "**Ключевое решение для бизнеса:** Компании необходимо сфокусироваться не на физическом ускорении транспорта, а на повышении точности прогнозных алгоритмов даты доставки на сайте."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f9b7b3d6-501d-4aad-a017-6695d59aa8de",
+   "metadata": {},
+   "source": [
+    "## Блок 4. Парето-анализ негатива и визуализация\n",
+    "\n",
+    "### Цель этапа:\n",
+    "Применить закон Парето к неудовлетворенности клиентов. Найти топ-категории товаров, которые генерируют 80% всех плохих отзывов (1 и 2 звезды) на маркетплейсе, и визуализировать их с помощью комбинированного графика."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a371bb43-ed3d-4e61-8829-5e0038c8761c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Присоединяем к нашей базе данные о позициях (items) и категориях товаров (products)\n",
+    "df_categories = df_merged.merge(items[['order_id', 'product_id']], on='order_id', how='inner')\n",
+    "df_categories = df_categories.merge(products[['product_id', 'product_category_name']], on='product_id', how='inner')\n",
+    "\n",
+    "# 2. Отбираем только плохие отзывы (1 и 2 звезды)\n",
+    "bad_orders = df_categories[df_categories['review_score'].isin([1, 2])]\n",
+    "\n",
+    "# 3. Группируем по категориям и считаем абсолютное количество негатива\n",
+    "pareto_bad = bad_orders.groupby('product_category_name')['order_id'].count().reset_index()\n",
+    "pareto_bad = pareto_bad.rename(columns={'order_id': 'bad_reviews'})\n",
+    "\n",
+    "# 4. Сортируем от самых \"токсичных\" к менее проблемным\n",
+    "pareto_bad = pareto_bad.sort_values(by='bad_reviews', ascending=False).reset_index(drop=True)\n",
+    "\n",
+    "# 5. Считаем процент негатива и кумулятивную (накопительную) долю\n",
+    "total_bad_reviews = pareto_bad['bad_reviews'].sum()\n",
+    "pareto_bad['share'] = (pareto_bad['bad_reviews'] / total_bad_reviews) * 100\n",
+    "pareto_bad['cumulative_share'] = pareto_bad['share'].cumsum()\n",
+    "\n",
+    "# 6. Ограничиваемся топ-15 категориями, которые формируют ~80% негатива\n",
+    "pareto_data = pareto_bad.head(15)\n",
+    "\n",
+    "# --- ВИЗУАЛИЗАЦИЯ КЕЙСА ---\n",
+    "fig, ax1 = plt.subplots(figsize=(14, 6))\n",
+    "\n",
+    "# Рисуем столбцы (абсолютное количество жалоб)\n",
+    "ax1.bar(pareto_data['product_category_name'], pareto_data['bad_reviews'], color='crimson', alpha=0.7)\n",
+    "ax1.set_ylabel('Количество плохих отзывов (1-2 звезды)', color='crimson', fontsize=12)\n",
+    "ax1.tick_params(axis='y', labelcolor='crimson')\n",
+    "\n",
+    "# Фиксируем деления на оси X перед установкой текстовых названий (лечит варнинг Matplotlib)\n",
+    "ax1.set_xticks(range(len(pareto_data)))\n",
+    "ax1.set_xticklabels(pareto_data['product_category_name'], rotation=45, ha='right')\n",
+    "\n",
+    "# Создаем вторую ось для кумулятивной кривой\n",
+    "ax2 = ax1.twinx()\n",
+    "ax2.plot(pareto_data['product_category_name'], pareto_data['cumulative_share'], color='darkblue', marker='D', ms=5, linewidth=2)\n",
+    "ax2.set_ylabel('Кумулятивная доля (%)', color='darkblue', fontsize=12)\n",
+    "ax2.tick_params(axis='y', labelcolor='darkblue')\n",
+    "\n",
+    "# Наносим горизонтальную линию порога Парето в 80%\n",
+    "ax2.axhline(80, color='orange', linestyle='--', linewidth=2, label='Порог Парето (80%)')\n",
+    "\n",
+    "plt.title('Анализ Парето: какие категории генерируют 80% негатива', fontsize=16, fontweight='bold')\n",
+    "fig.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "49ad987e-6046-4cfc-8ec4-d891bc19ba1d",
+   "metadata": {},
+   "source": [
+    "### 🔍 Бизнес-вывод по Блоку 4:\n",
+    "График наглядно демонстрирует действие закона Парето: всего 14-15 категорий товаров из более чем 70 существующих аккумулируют 80% всего клиентского негатива на платформе. \n",
+    "\n",
+    "Абсолютными лидерами «черного списка» стали категории `cama_mesa_banho` (постельное белье) и `moveis_decoracao` (домашний декор). Они создают суммарно более **21% всего хейта** маркетплейса. Фокусировка операционного отдела на исправлении качества сервиса именно в этих топ-категориях даст максимальный эффект для оздоровления рейтинга всей платформы."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4485a51b-86a6-47d0-a2fe-98ed983dda96",
+   "metadata": {},
+   "source": [
+    "## Блок 5. Финансовый ABC-анализ категорий\n",
+    "\n",
+    "### Цель этапа:\n",
+    "Классифицировать товарные категории маркетплейса по их вкладу в общую выручку компании. Разделить ассортимент на три стратегические группы: A (основа выручки, 80%), B (середняки, 15%) и C (длинный хвост малоприбыльных товаров, 5%)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a642674b-c666-4235-ab70-8ebfd9c867ba",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Считаем общую выручку (сумму цен товаров) по каждой категории\n",
+    "category_revenue = df_categories.merge(items[['order_id', 'product_id', 'price']], on=['order_id', 'product_id'], how='inner')\n",
+    "category_revenue = category_revenue.groupby('product_category_name')['price'].sum().reset_index()\n",
+    "category_revenue = category_revenue.rename(columns={'price': 'total_revenue'})\n",
+    "\n",
+    "# 2. Сортируем по убыванию выручки и считаем кумулятивную долю\n",
+    "category_revenue = category_revenue.sort_values(by='total_revenue', ascending=False).reset_index(drop=True)\n",
+    "total_market_revenue = category_revenue['total_revenue'].sum()\n",
+    "category_revenue['share'] = (category_revenue['total_revenue'] / total_market_revenue) * 100\n",
+    "category_revenue['cumulative_share'] = category_revenue['share'].cumsum()\n",
+    "\n",
+    "# 3. Функция для присвоения категорий A, B, C\n",
+    "def assign_abc(row):\n",
+    "    if row['cumulative_share'] <= 80:\n",
+    "        return 'A'\n",
+    "    elif row['cumulative_share'] <= 95:\n",
+    "        return 'B'\n",
+    "    else:\n",
+    "        return 'C'\n",
+    "\n",
+    "category_revenue['abc_group'] = category_revenue.apply(assign_abc, axis=1)\n",
+    "\n",
+    "# 4. Формируем итоговую бизнес-таблицу\n",
+    "abc_summary = category_revenue.groupby('abc_group').agg(\n",
+    "    category_count=('product_category_name', 'count'),\n",
+    "    group_revenue=('total_revenue', 'sum')\n",
+    ").reset_index()\n",
+    "\n",
+    "abc_summary['revenue_share_%'] = (abc_summary['group_revenue'] / total_market_revenue * 100).round(1)\n",
+    "display(abc_summary)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a0adbb8f-89e0-4dfb-a4f7-66aef6397fa3",
+   "metadata": {},
+   "source": [
+    "### 🔍 Бизнес-вывод по Блоку 5:\n",
+    "Финансовый аудит выявил классическую асимметрию e-commerce бизнеса:\n",
+    "* **Группа A (16 категорий):** Генерирует **79.1% всей выручки**. Это ядро бизнеса, требующее максимального контроля остатков на складах и жесткого удержания продавцов.\n",
+    "* **Группа B (16 категорий):** Приносит **15.7% выручки**. Стабильный средний класс платформы.\n",
+    "* **Группа C (41 категория):** Формирует огромный «длинный хвост», приносящий всего **5.2% выручки**.\n",
+    "\n",
+    "**Стратегическая рекомендация:** Перевести 41 категорию из группы C на модель работы FBS (продажа со склада продавца), полностью разгрузив операционные мощности и склады маркетплейса от низкоэффективных товаров, и сфокусировать ресурсы на оптимизации логистики локомотивов из группы A."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1b40c7a0-32ea-4ef2-b082-39e006eebe11",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.14.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
